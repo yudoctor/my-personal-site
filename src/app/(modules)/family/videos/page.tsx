@@ -9,6 +9,16 @@ function fmtSize(b: number): string {
   return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
+// 秒 → "1:23:45" / "12:34"
+function fmtDuration(s: number): string {
+  const total = Math.round(s);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
 export default async function VideosPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams;
   const videos = listMedia({ type: 'video', q, limit: 2000 });
@@ -42,17 +52,43 @@ export default async function VideosPage({ searchParams }: { searchParams: Promi
               href={`/family/videos/${v.id}`}
               className="block border border-gray-100 rounded-xl overflow-hidden bg-white hover:shadow-md hover:border-brand-300 transition"
             >
-              <div className="aspect-video bg-gray-900 flex items-center justify-center text-white">
-                <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center backdrop-blur">
-                  <div className="w-0 h-0 border-y-8 border-y-transparent border-l-12 border-l-white ml-1" />
-                </div>
+              <div className="aspect-video bg-gray-900 relative overflow-hidden">
+                {v.thumb_url ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={v.thumb_url}
+                      alt={v.title || v.original_name}
+                      loading="lazy"
+                      className="w-full h-full object-cover"
+                    />
+                    {/* 播放图标浮层 */}
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/15 group-hover:bg-black/30 transition">
+                      <div className="w-14 h-14 rounded-full bg-white/85 backdrop-blur flex items-center justify-center shadow-lg">
+                        <div className="w-0 h-0 border-y-8 border-y-transparent border-l-12 border-l-gray-900 ml-1" />
+                      </div>
+                    </div>
+                    {/* 时长角标 */}
+                    {v.duration != null && (
+                      <div className="absolute bottom-2 right-2 text-[10px] bg-black/70 text-white px-1.5 py-0.5 rounded tabular-nums">
+                        {fmtDuration(v.duration)}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white">
+                    <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center backdrop-blur">
+                      <div className="w-0 h-0 border-y-8 border-y-transparent border-l-12 border-l-white ml-1" />
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="p-3">
                 <div className="text-sm font-semibold text-gray-900 truncate">
                   {v.title || v.original_name}
                 </div>
                 <div className="text-xs text-gray-500 mt-1">
-                  {v.width && v.height ? `${v.width}×${v.height} · ` : ''}{fmtSize(v.size)}
+                  {v.width && v.height ? `${v.width}×${v.height} · ` : ''}{fmtSize(v.size)}{v.duration != null ? ` · ${fmtDuration(v.duration)}` : ''}
                 </div>
                 {v.description && (
                   <div className="text-xs text-gray-500 mt-1 line-clamp-2">{v.description}</div>

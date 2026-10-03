@@ -10,7 +10,7 @@ const nextConfig = {
       bodySizeLimit: '500mb',
     },
     // sharp 已经是预编译二进制，但显式标记能让 Next.js 不去打包它
-    serverComponentsExternalPackages: ['sharp', 'archiver'],
+    serverComponentsExternalPackages: ['sharp', 'archiver', 'ffmpeg-static', 'fluent-ffmpeg'],
   },
 };
 

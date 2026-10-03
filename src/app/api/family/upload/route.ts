@@ -7,13 +7,22 @@
  * 自动行为：
  *  - 照片：sharp 解析宽高 + 生成 WebP 缩略图
  *  - 照片：尝试从 EXIF 提取 DateTimeOriginal 作为 taken_at（仅当用户未手动指定）
+ *  - 视频：ffmpeg 抽帧（第 1 秒）作为 WebP 缩略图 + 获取宽高/时长
  */
 import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import exifr from 'exifr';
-import { getStorage } from '@/lib/storage';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegStatic from 'ffmpeg-static';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { getStorage, absolutePath } from '@/lib/storage';
 import { createMedia } from '@/lib/family/repo';
 import { config } from '@/lib/config';
+
+// 把 ffmpeg-static 的二进制路径交给 fluent-ffmpeg
+ffmpeg.setFfmpegPath(ffmpegStatic as unknown as string);
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,7 +41,49 @@ function exifDateToString(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// 用 ffmpeg 抽一帧 + 拿元数据（duration / width / height）
+async function extractVideoFrame(
+  videoPath: string,
+  frameOutPath: string,
+): Promise<{ width: number | null; height: number | null; duration: number | null }> {
+  return new Promise((resolve) => {
+    let width: number | null = null;
+    let height: number | null = null;
+    let duration: number | null = null;
+
+    const cmd = ffmpeg(videoPath)
+      // 第 1 秒抽一帧；视频不足 1 秒时自动取第一帧
+      .on('end', () => resolve({ width, height, duration }))
+      .on('error', (e) => {
+        console.error('ffmpeg error:', e.message);
+        resolve({ width, height, duration });
+      })
+      .screenshots({
+        timestamps: ['1'],
+        filename: path.basename(frameOutPath),
+        folder: path.dirname(frameOutPath),
+        size: '600x?',
+      });
+
+    // 顺便取元数据（codec_type 视频流的 width/height，format 的 duration）
+    cmd.ffprobe((err, data) => {
+      if (err) return;
+      const vstream = data.streams?.find((s: any) => s.codec_type === 'video');
+      if (vstream) {
+        width = vstream.width ?? null;
+        height = vstream.height ?? null;
+      }
+      if (data.format?.duration) {
+        duration = Math.round(parseFloat(String(data.format.duration)) * 10) / 10;
+      }
+    });
+  });
+}
+
 export async function POST(req: NextRequest) {
+  // 让后续异常能拿到 tmpdir 以便清理
+  let tmpDir: string | null = null;
+
   try {
     const form = await req.formData();
     const file = form.get('file');
@@ -100,10 +151,45 @@ export async function POST(req: NextRequest) {
         }
       }
     } else {
+      // 视频：mime 兜底
       mimeType = mimeType.startsWith('video/') ? mimeType : 'video/mp4';
     }
 
+    // 先把原始视频存到永久位置（路径稳定，方便之后取）
     const filename = await storage.save(buf, file.name, mimeType);
+
+    // 视频抽帧（仅本地存储有效；cos 模式下 absolutePath 不工作 → 后续扩展）
+    if (type === 'video' && config.storage.driver === 'local') {
+      try {
+        tmpDir = await mkdtemp(path.join(tmpdir(), 'vid-'));
+        const framePath = path.join(tmpDir, 'frame.jpg');
+        const videoAbsPath = absolutePath(filename);
+
+        const meta = await extractVideoFrame(videoAbsPath, framePath);
+        width = meta.width;
+        height = meta.height;
+        duration = meta.duration;
+
+        // sharp 把抽出的 jpg 再压成 WebP 缩略图（与照片缩略图统一规格）
+        try {
+          const frameBuf = await readFile(framePath);
+          const webp = await sharp(frameBuf, { failOn: 'none' })
+            .resize({ width: 600, height: 600, fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: 80 })
+            .toBuffer();
+          thumbFilename = await storage.save(
+            webp,
+            file.name.replace(/\.[^.]+$/, '') + '.thumb.webp',
+            'image/webp',
+          );
+        } catch (e: any) {
+          console.error('frame→webp failed:', e?.message);
+          // 抽帧失败也不阻断上传，thumbFilename 保持 null
+        }
+      } catch (e: any) {
+        console.error('video thumb extraction failed:', e?.message);
+      }
+    }
 
     // taken_at 优先级：用户表单 > EXIF > null
     const userTakenAt = (form.get('taken_at') as string) || null;
@@ -129,5 +215,10 @@ export async function POST(req: NextRequest) {
   } catch (e: any) {
     console.error('upload error:', e);
     return NextResponse.json({ error: e?.message || 'upload failed' }, { status: 500 });
+  } finally {
+    // 清理临时目录
+    if (tmpDir) {
+      rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
