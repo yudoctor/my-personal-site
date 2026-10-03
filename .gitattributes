@@ -1,0 +1,24 @@
+# 跨平台换行策略：仓库里统一 LF，检出时按 OS 自适应
+# 避免 CRLF 文件在 Linux 部署时出怪问题
+* text=auto eol=lf
+
+# shell 脚本强制 LF（即使 Windows 检出不改）
+*.sh text eol=lf
+
+# 二进制明确标记
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.webp binary
+*.gif binary
+*.heic binary
+*.heif binary
+*.mp4 binary
+*.mov binary
+*.webm binary
+*.mkv binary
+*.avi binary
+*.m4v binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary

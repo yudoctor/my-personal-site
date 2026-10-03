@@ -1,0 +1,26 @@
+# 不要把 dev 产物、缓存、本地数据塞进镜像
+node_modules
+.next
+out
+.git
+.gitignore
+.env.local
+.env*.local
+data
+uploads
+*.log
+.DS_Store
+Thumbs.db
+
+# Docker 自身
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
+CLAUDE.md
+scripts
+
+# IDE
+.vscode
+.idea
+*.swp

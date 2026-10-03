@@ -1,0 +1,110 @@
+# 自动构建 + 推送镜像到腾讯云 TCR + 触发服务器滚动重启
+#
+# 触发条件：
+#   - push 到 main 分支 → 自动构建 + 推送 + 部署
+#   - tag v*.*.*        → 自动构建 + 推送（带版本 tag，不自动部署）
+#   - workflow_dispatch → 手动触发（可在 Actions 页面选 tag）
+#
+# 需要的 GitHub Secrets（在仓库 Settings → Secrets and variables → Actions 配置）：
+#   TCR_REGISTRY        TCR 实例地址，如 ccr.ccs.tencentyun.com
+#   TCR_NAMESPACE       命名空间，如 mysite
+#   TCR_USERNAME        访问凭证用户名（不是腾讯云账号密码！）
+#   TCR_PASSWORD        访问凭证密码
+#   SERVER_SSH_KEY      （可选）服务器 SSH 私钥，启用自动部署才需要
+#   SERVER_HOST         （可选）服务器 IP / 域名
+#   SERVER_USER         （可选）服务器 SSH 用户名，默认 root
+
+name: build-and-deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '镜像 tag（留空用 short-sha）'
+        required: false
+        default: ''
+
+env:
+  IMAGE_NAME: my-personal-site
+  REGISTRY: ${{ secrets.TCR_REGISTRY }}
+  NAMESPACE: ${{ secrets.TCR_NAMESPACE }}
+
+jobs:
+  # ---- 1. 构建 + 推镜像 ----
+  build:
+    name: build & push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to TCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          # tag 优先级：手动输入 > git tag > short-sha
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAGS="${{ inputs.tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAGS="${GITHUB_REF#refs/tags/v}"
+          else
+            TAGS="$(git rev-parse --short HEAD)"
+          fi
+          echo "value=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "::notice::Building image tags: $TAGS, latest"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.value }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---- 2. 部署到服务器（仅 main 分支 + 配了 SSH 密钥才跑） ----
+  deploy:
+    name: deploy to server
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production   # 用 GitHub 部署保护，需要审批才能跑
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER || 'root' }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_path: scripts/deploy-server.sh
+          args: |
+            ${{ env.REGISTRY }}
+            ${{ env.NAMESPACE }}
+            ${{ env.IMAGE_NAME }}
+
+      - name: Verify health
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER || 'root' }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            sleep 5
+            curl -sf http://127.0.0.1:3000/api/family/stats || (echo "Health check failed"; exit 1)
+            echo "✅ Health check passed"
